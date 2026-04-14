@@ -15,7 +15,7 @@ SECTOR_MAP = {
     "Real Estate": "🏢 부동산", "Energy": "🛢️ 에너지", "Basic Materials": "🧱 소재"
 }
 
-# 2. 안정적인 분석을 위한 핵심 티커 리스트
+# 2. 안정적인 분석을 위한 핵심 티커 리스트 (3년치 로딩 최적화)
 def get_verified_tickers():
     return [
         "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "COST", "PEP",
@@ -27,16 +27,19 @@ def get_verified_tickers():
 @st.cache_data(ttl=3600)
 def fetch_analysis_data(years):
     tickers = get_verified_tickers()
-    # 일괄 다운로드로 속도 향상 및 차단 방지
     try:
+        # 일괄 다운로드로 속도 향상 및 차단 방지
         data = yf.download(tickers, period=f"{years}y", interval="1d", progress=False, group_by='ticker')
+        if data.empty: return pd.DataFrame()
     except:
         return pd.DataFrame()
 
     results = []
+    # 데이터 조회를 위한 Tickers 객체 생성
+    tickers_obj = yf.Tickers(' '.join(tickers))
+    
     for t in tickers:
         try:
-            # 주가 데이터 추출
             df_t = data[t].dropna()
             if df_t.empty: continue
             
@@ -46,11 +49,11 @@ def fetch_analysis_data(years):
             
             mdd = ((cur - high) / high) * 100
             rec = ((cur - low) / low) * 100
-            # 1. 점수 계산 후 소수점 한자리로 통일
+            # 점수 계산 후 소수점 한자리 통일
             score = round(abs(mdd) - rec, 1)
 
-            # 섹터 및 시총 정보 (개별 호출 최소화)
-            info = yf.Ticker(t).info
+            # 섹터 및 시총 정보 추출
+            info = tickers_obj.tickers[t].info
             s_raw = info.get('sector', '기타')
             mkt_cap = (info.get('marketCap') or 0) / 1e9
 
@@ -72,7 +75,7 @@ tabs = st.tabs(["1년 분석", "2년 분석", "3년 분석"])
 for i, tab in enumerate(tabs):
     years = i + 1
     with tab:
-        with st.spinner(f"{years}년 데이터를 정밀 분석 중입니다..."):
+        with st.spinner(f"{years}년 데이터를 분석 중입니다..."):
             res_df = fetch_analysis_data(years)
             if not res_df.empty:
                 st.dataframe(
@@ -83,9 +86,9 @@ for i, tab in enumerate(tabs):
                         "현재가": st.column_config.NumberColumn(format="$%.2f"),
                         "MDD": st.column_config.NumberColumn(format="%.1f%%"),
                         "회복률": st.column_config.NumberColumn(format="%.1f%%"),
-                        "점수": st.column_config.NumberColumn(format="%.1f"), # 소수점 한자리 통일
+                        "점수": st.column_config.NumberColumn(format="%.1f"), # 소수점 한자리 고정
                         "시총($B)": st.column_config.NumberColumn(format="$%.1f B")
                     }
                 )
             else:
-                st.error("데이터 서버 응답이 지연되고 있습니다. 잠시 후 상단 메뉴에서 [Clear Cache]를 눌러주세요.")
+                st.error("데이터 서버 응답이 지연되고 있습니다. 상단 메뉴에서 [Clear Cache] 후 다시 시도해 주세요.")
