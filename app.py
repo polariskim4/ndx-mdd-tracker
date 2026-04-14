@@ -10,33 +10,33 @@ from datetime import datetime
 # 1. 페이지 설정
 st.set_page_config(page_title="나스닥 100 실시간 MDD 분석", page_icon="📈", layout="wide")
 
-# 2. 티커 리스트 가져오기 (User-Agent 강화)
+# 2. 티커 리스트 가져오기 (전처리 강화)
 @st.cache_data(ttl=86400)
 def get_ndx_tickers():
     url = "https://en.wikipedia.org/wiki/Nasdaq-100"
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = requests.get(url, headers=headers, timeout=15)
         html_data = io.StringIO(response.text)
         tables = pd.read_html(html_data)
-        df = next((table for table in tables if 'Ticker' in table.columns or 'Symbol' in table.columns), None)
+        # 나스닥 테이블은 보통 첫 번째 혹은 두 번째에 위치
+        df = next((table for table in tables if any(c in table.columns for c in ['Ticker', 'Symbol'])), None)
         if df is not None:
-            col_name = 'Ticker' if 'Ticker' in df.columns else 'Symbol'
-            # 티커 전처리 (점 -> 대시)
-            return sorted(df[col_name].str.replace('.', '-', regex=False).unique().tolist())
+            col = 'Ticker' if 'Ticker' in df.columns else 'Symbol'
+            # 티커에서 점(.)을 대시(-)로 바꾸고 공백 제거
+            return sorted(df[col].astype(str).str.replace('.', '-', regex=False).str.strip().unique().tolist())
     except:
         pass
     return ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO", "PEP", "COST"]
 
-# 3. 데이터 분석 및 시총 보정 (S&P 100 성공 로직 적용)
+# 3. 데이터 분석 및 시총 보정 로직
 @st.cache_data(ttl=3600)
 def fetch_analysis(years):
     tickers = get_ndx_tickers()
+    # 1. 주가 데이터 일괄 다운로드
     data = yf.download(tickers, period=f"{years}y", interval="1d", progress=False)
     if data.empty: return pd.DataFrame()
 
-    # 시총 조회를 위한 전체 Tickers 객체 생성
-    tickers_obj = yf.Tickers(' '.join(tickers))
     results = []
     
     for t in tickers:
@@ -53,19 +53,31 @@ def fetch_analysis(years):
             chg = ((current_val - close_series.iloc[0]) / close_series.iloc[0]) * 100
             score = round(abs(mdd) - rec, 1)
 
-            # --- 시가총액 3중 방어 (S&P 100 성공 버전) ---
+            # --- 시가총액 수집 4단계 경로 (보정 강화) ---
             mkt_cap = 0
-            try:
-                t_info = tickers_obj.tickers[t].info
-                # 1. marketCap 우선, 없으면 totalAssets 시도
-                mkt_cap = t_info.get('marketCap') or t_info.get('totalAssets') or 0
-                
-                # 2. 여전히 0이면 fast_info 시도
-                if not mkt_cap:
-                    mkt_cap = tickers_obj.tickers[t].fast_info.get('market_cap', 0)
-            except:
-                mkt_cap = 0
+            ticker_obj = yf.Ticker(t)
             
+            # 경로 1: fast_info (가장 빠름)
+            try: mkt_cap = ticker_obj.fast_info.get('market_cap', 0)
+            except: pass
+            
+            # 경로 2: info (전통적 방식)
+            if not mkt_cap:
+                try: mkt_cap = ticker_obj.info.get('marketCap', 0)
+                except: pass
+                
+            # 경로 3: 유동 시가총액 (floatShares * currentPrice)
+            if not mkt_cap:
+                try:
+                    info = ticker_obj.info
+                    mkt_cap = (info.get('floatShares', 0) or info.get('sharesOutstanding', 0)) * current_val
+                except: pass
+            
+            # 경로 4: 기업 가치 (Enterprise Value) 대체
+            if not mkt_cap:
+                try: mkt_cap = ticker_obj.info.get('enterpriseValue', 0)
+                except: pass
+
             mkt_cap_bn = round(mkt_cap / 1e9, 1) if mkt_cap else 0
             # ------------------------------------------
 
@@ -78,16 +90,16 @@ def fetch_analysis(years):
         except: continue
     return pd.DataFrame(results)
 
-# 4. 메인 UI
+# 4. UI 및 탭 렌더링
 st.title("📈 나스닥 100 실시간 MDD 분석")
 ny_tz = pytz.timezone('America/New_York')
 st.caption(f"최종 업데이트 (NY): {datetime.now(ny_tz).strftime('%Y-%m-%d %H:%M:%S')}")
 
-tab1, tab2, tab3 = st.tabs(["1년 분석", "2년 분석", "3년 분석"])
+tabs = st.tabs(["1년 분석", "2년 분석", "3년 분석"])
 
 def render_tab(years, target_tab):
     with target_tab:
-        with st.spinner(f"나스닥 100 {years}년치 정밀 분석 중..."):
+        with st.spinner(f"나스닥 100 종목 분석 및 시총 보정 중..."):
             df = fetch_analysis(years)
             if not df.empty:
                 st.dataframe(
@@ -103,6 +115,6 @@ def render_tab(years, target_tab):
                     }
                 )
 
-render_tab(1, tab1)
-render_tab(2, tab2)
-render_tab(3, tab3)
+render_tab(1, tabs[0])
+render_tab(2, tabs[1])
+render_tab(3, tabs[2])
