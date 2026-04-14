@@ -16,16 +16,17 @@ SECTOR_MAP = {
     "Real Estate": "🏢 부동산", "Energy": "🛢️ 에너지", "Basic Materials": "🧱 소재"
 }
 
-# 2. 분석 티커 리스트 (안정성이 검증된 20개 종목으로 소폭 확대)
+# 2. 분석 티커 리스트 (안정성이 검증된 핵심 25개 종목)
 def get_safe_tickers():
     return ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AVGO", "COST", "PEP", 
-            "NFLX", "ADBE", "AMD", "QCOM", "INTU", "AMAT", "ISRG", "MU", "TXN", "HON"]
+            "NFLX", "ADBE", "AMD", "QCOM", "INTU", "AMAT", "ISRG", "MU", "TXN", "HON",
+            "BKNG", "PANW", "VRTX", "SBUX", "GILD"]
 
 @st.cache_data(ttl=3600)
 def fetch_final_data(years):
     tickers = get_safe_tickers()
     try:
-        # 주가 데이터 일괄 다운로드
+        # 주가 데이터 일괄 다운로드 (속도 및 차단 방지 최적화)
         data = yf.download(tickers, period=f"{years}y", interval="1d", progress=False)
         if data.empty: return pd.DataFrame()
         
@@ -44,7 +45,7 @@ def fetch_final_data(years):
                 
                 mdd = ((cur - high) / high) * 100
                 rec = ((cur - low) / low) * 100
-                # 점수 소수점 한 자리로 계산
+                # 점수 계산 및 소수점 한 자리 통일
                 score = round(abs(mdd) - rec, 1)
 
                 # 섹터 및 시총 정보 추출
@@ -87,12 +88,12 @@ def render_tab(years, target_tab):
                         "현재가": st.column_config.NumberColumn(format="$%.2f"),
                         "MDD": st.column_config.NumberColumn(format="%.1f%%"),
                         "회복률": st.column_config.NumberColumn(format="%.1f%%"),
-                        "점수": st.column_config.NumberColumn(format="%.1f"), # 소수점 한 자리 통일
+                        "점수": st.column_config.NumberColumn(format="%.1f"), # 소수점 한 자리 고정
                         "시총($B)": st.column_config.NumberColumn(format="$%.1f B")
                     }
                 )
             else:
-                st.error("데이터 서버 응답이 없습니다. 잠시 후 [Clear Cache]를 시도해 주세요.")
+                st.error("데이터 서버 응답이 지연되고 있습니다. 잠시 후 [Clear Cache]를 눌러주세요.")
 
 render_tab(1, tabs[0])
 render_tab(2, tabs[1])
