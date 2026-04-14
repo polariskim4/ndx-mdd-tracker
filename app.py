@@ -4,6 +4,7 @@ import pandas as pd
 import pytz
 import requests
 import io
+import time
 from datetime import datetime
 
 # 1. 페이지 설정
@@ -26,32 +27,47 @@ def get_ndx_tickers():
         pass
     return ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO", "PEP", "COST"]
 
-# 3. 시가총액 데이터만 별도로 수집 (24시간 캐싱 - 가장 중요)
+# 3. 시가총액 수집 보정 (재시도 로직 추가)
 @st.cache_data(ttl=86400)
-def get_market_caps(tickers):
+def get_market_caps_robust(tickers):
     caps = {}
     tickers_obj = yf.Tickers(' '.join(tickers))
+    
+    # 1차 시도
     for t in tickers:
         try:
-            # info 대신 fast_info를 우선 사용하여 차단 회피 및 속도 향상
             val = tickers_obj.tickers[t].fast_info.get('market_cap', 0)
-            if not val: # fast_info에 없으면 info 시도
-                val = tickers_obj.tickers[t].info.get('marketCap', 0)
-            caps[t] = round(val / 1e9, 1) if val else 0
+            if not val: val = tickers_obj.tickers[t].info.get('marketCap', 0)
+            caps[t] = val if val else 0
         except:
             caps[t] = 0
-    return caps
+            
+    # 시총이 0인 종목들만 골라서 2차 재시도 (잠깐 쉬었다가 다시 물어보기)
+    retry_tickers = [t for t, cap in caps.items() if cap == 0]
+    if retry_tickers:
+        time.sleep(1) # 서버 과부하 방지 휴식
+        for t in retry_tickers:
+            try:
+                # 재시도 시에는 단일 Ticker 객체로 접근
+                val = yf.Ticker(t).fast_info.get('market_cap', 0)
+                if val: caps[t] = val
+            except:
+                continue
+                
+    # 최종 단위 변환 ($B)
+    return {t: round(val / 1e9, 1) if val else 0 for t, val in caps.items()}
 
 # 4. 데이터 분석 함수
 @st.cache_data(ttl=3600)
 def fetch_analysis(years):
     tickers = get_ndx_tickers()
+    # 주가 데이터 일괄 다운로드
     data = yf.download(tickers, period=f"{years}y", interval="1d", progress=False)
     
     if data.empty: return pd.DataFrame()
 
-    # 시총 데이터 가져오기 (캐시된 데이터 활용)
-    mkt_caps = get_market_caps(tickers)
+    # 시총 데이터 가져오기 (보정된 함수 사용)
+    mkt_caps = get_market_caps_robust(tickers)
     
     results = []
     for t in tickers:
@@ -70,18 +86,14 @@ def fetch_analysis(years):
 
             results.append({
                 "신호": "🔥 적극매수" if score >= 20 else "🟢 매수" if score >= 10 else "🟡 진입",
-                "티커": t, 
-                "현재가": current_val, 
-                "MDD": mdd, 
-                "회복률": rec, 
-                "수익률": chg, 
-                "점수": score,
+                "티커": t, "현재가": current_val, "MDD": mdd, 
+                "회복률": rec, "수익률": chg, "점수": score,
                 "시총($B)": mkt_caps.get(t, 0)
             })
         except: continue
     return pd.DataFrame(results)
 
-# 5. 메인 UI
+# 5. UI 구성
 st.title("📈 실시간 나스닥 100 (NDX) MDD 분석")
 ny_tz = pytz.timezone('America/New_York')
 st.caption(f"최종 업데이트 (NY): {datetime.now(ny_tz).strftime('%Y-%m-%d %H:%M:%S')}")
@@ -105,8 +117,6 @@ def render_tab(years, target_tab):
                         "시총($B)": st.column_config.NumberColumn(format="$%.1f B")
                     }
                 )
-            else:
-                st.error("데이터 서버 응답이 없습니다. 잠시 후 [Clear Cache]를 시도해 주세요.")
 
 render_tab(1, tab1)
 render_tab(2, tab2)
